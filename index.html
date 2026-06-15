@@ -143,6 +143,24 @@ input::placeholder{color:#6f6f66}
 const LOGO_DARK="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%20112%2092%22%3E%3Cg%20fill%3D%22%2314161A%22%20transform%3D%22translate%2828%2C3%29%22%3E%3Cpolygon%20points%3D%2224%2C2%2046%2C2%2055%2C20%2024%2C20%22/%3E%3Cpolygon%20points%3D%222%2C20%2033%2C20%2033%2C38%2011%2C38%22/%3E%3C/g%3E%3Ctext%20x%3D%2256%22%20y%3D%2268%22%20font-family%3D%22Georgia%2C%26apos%3BTimes%20New%20Roman%26apos%3B%2Cserif%22%20font-size%3D%2225%22%20letter-spacing%3D%224%22%20fill%3D%22%2314161A%22%20text-anchor%3D%22middle%22%3ESTAIR%3C/text%3E%3Ctext%20x%3D%2257%22%20y%3D%2283%22%20font-family%3D%22Georgia%2Cserif%22%20font-size%3D%227.5%22%20letter-spacing%3D%224.5%22%20fill%3D%22%23B79B60%22%20text-anchor%3D%22middle%22%3EDIGITAL%3C/text%3E%3C/svg%3E", SYMBOL="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2057%2040%22%3E%3Cg%20fill%3D%22%2314161A%22%3E%3Cpolygon%20points%3D%2224%2C2%2046%2C2%2055%2C20%2024%2C20%22/%3E%3Cpolygon%20points%3D%222%2C20%2033%2C20%2033%2C38%2011%2C38%22/%3E%3C/g%3E%3C/svg%3E";
 const MEET="https://calendly.com/stair-digital/strategy-call"; // replace with real link
 
+// ---- BACKEND (so proposals are genuinely AI-generated, unique per company) ----
+// Paste your deployed Cloudflare Worker URL here after following DEPLOY.md.
+// While this is empty, the page tries a direct call (works only inside the Claude
+// preview) and otherwise shows the built-in sample.
+const API_ENDPOINT="";
+
+// Keyless live AI with no backend and no key (uses the free Pollinations service).
+// true  = try real AI generation in the browser (unique per company), no setup.
+//         Free public service, so quality/uptime vary; it falls back to the
+//         built-in sector-aware generator if it is slow or down.
+// false = skip it and use only the reliable on-brand local generator.
+const FREE_AI=true;
+
+// ---- LOGOS (optional upgrade) ----
+// Leave blank to use free favicon sources. For crisp brand logos, paste a free
+// Brandfetch client id (brandfetch.com/developers): 
+const BRANDFETCH_ID="";
+
 const VCARD=["BEGIN:VCARD","VERSION:3.0","N:Saraff;Shubham;;;","FN:Shubham Saraff",
  "ORG:STAIR Digital","TITLE:Co-Founder & Director","TEL;TYPE=CELL:+919930220342",
  "EMAIL:saraffshubham@gmail.com","URL:https://www.stair.digital","END:VCARD"].join("\n");
@@ -161,8 +179,7 @@ const CREDENTIALS=[
 ];
 
 function companyToDomain(name){
- let s=(name||"").toLowerCase().replace(/&/g," and ").replace(/[^a-z0-9 ]/g,"").trim();
- s=s.replace(/\b(the|ltd|limited|inc|corp|company|co|pvt|private|group)\b/g,"").replace(/\s+/g,"");
+ let s=(name||"").toLowerCase().replace(/&/g,"and").replace(/[^a-z0-9]/g,"");
  return s? s+".com" : "";
 }
 
@@ -181,6 +198,21 @@ After any searching, return ONLY a valid JSON object as your final output, no pr
 "governance":"","impact":["","",""],"cta":""}`;
 
 async function callAI(name,company){
+ // 1) Production proxy (your own key, best quality, web-grounded).
+ if(API_ENDPOINT && !/YOUR-WORKER/i.test(API_ENDPOINT)){
+  const res=await fetch(API_ENDPOINT,{
+   method:"POST", headers:{"Content-Type":"application/json"},
+   body:JSON.stringify({name:name,company:company})
+  });
+  if(!res.ok) throw new Error("http "+res.status);
+  const data=await res.json();
+  if(data && data.error) throw new Error(data.error);
+  return data;
+ }
+ // 2) Keyless live AI, no backend (free public service).
+ if(FREE_AI){ return await callFreeAI(name,company); }
+ // 3) Direct call. Works inside the Claude preview (key injected); not on a
+ //    plain static host, where it drops to the local generator below.
  const res=await fetch("https://api.anthropic.com/v1/messages",{
   method:"POST", headers:{"Content-Type":"application/json"},
   body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:1600,
@@ -194,40 +226,231 @@ async function callAI(name,company){
  return JSON.parse(t);
 }
 
-function demoProposal(company){
- const C=company;
- return {
-  company:C, domain:companyToDomain(C), sector:"", snapshot:"",
-  title:"An AI-First Blueprint for "+C,
-  exec:C+" sits at a moment where artificial intelligence can compound efficiency, insight and growth at once. STAIR would partner with "+C+"'s leadership to find the highest-return AI opportunities and deliver them under board-grade governance.",
+async function callFreeAI(name,company){
+ const ctrl=new AbortController();
+ const timer=setTimeout(()=>ctrl.abort(), 28000); // don't hang forever
+ try{
+  const res=await fetch("https://text.pollinations.ai/openai",{
+   method:"POST", headers:{"Content-Type":"application/json"}, signal:ctrl.signal,
+   body:JSON.stringify({
+    model:"openai",
+    messages:[
+     {role:"system",content:PROMPT_HEAD},
+     {role:"user",content:"Prospect name: "+name+"\nCompany: "+company}
+    ],
+    temperature:0.7
+   })
+  });
+  if(!res.ok) throw new Error("freeai http "+res.status);
+  const data=await res.json();
+  let t=(data&&data.choices&&data.choices[0]&&data.choices[0].message&&data.choices[0].message.content)
+        || data.content || (typeof data==="string"?data:"");
+  t=String(t).trim().replace(/```json|```/g,"").trim();
+  const a=t.indexOf("{"),z=t.lastIndexOf("}"); if(a>=0&&z>a)t=t.slice(a,z+1);
+  const obj=JSON.parse(t);
+  if(!obj || !obj.focus) throw new Error("freeai bad shape");
+  if(!obj.company) obj.company=company;
+  if(!obj.domain) obj.domain=companyToDomain(company);
+  return obj;
+ } finally { clearTimeout(timer); }
+}
+
+function hashStr(s){let h=0;for(let i=0;i<String(s).length;i++){h=(h*31+s.charCodeAt(i))>>>0;}return h;}
+
+const SECTOR_MAP=[
+ [/(insur|hdfc life|sbi life|max life|bajaj allianz|star health|niva|acko|policybazaar|life insurance|general insurance)/,"insurance"],
+ [/(bank|hdfc|icici|axis|kotak|\bsbi\b|yes ?bank|idfc|indusind|federal|bandhan|finserv|finance|capital|lending|fintech|payments)/,"banking"],
+ [/(motor|auto|automobile|maruti|mahindra|bajaj|hero|tvs|ashok leyland|eicher|ola electric|vehicle)/,"automotive"],
+ [/(pharma|pharmaceutic|labs|life ?science|healthcare|hospital|diagnost|cipla|sun pharma|dr ?reddy|lupin|biocon|apollo|fortis|medic)/,"pharma"],
+ [/(energy|power|petroleum|\boil\b|\bgas\b|solar|renewable|ntpc|ongc|\bioc\b|bpcl|hpcl|reliance|adani|tata power|jsw energy|utilit)/,"energy"],
+ [/(infosys|\btcs\b|wipro|\bhcl\b|tech ?mahindra|mindtree|ltimindtree|software|infotech|systems|technolog|consultanc|persistent|mphasis|coforge|\bit services\b)/,"it_services"],
+ [/(paints|asian paints|berger|fmcg|foods|beverage|dabur|marico|nestle|hindustan unilever|\bhul\b|\bitc\b|britannia|godrej|emami|consumer goods)/,"fmcg"],
+ [/(retail|\bmart\b|stores|bazaar|fashion|trent|dmart|avenue supermart|flipkart|amazon|myntra|nykaa|meesho|ecommerce|e-commerce)/,"retail"],
+ [/(telecom|airtel|\bjio\b|vodafone|\bvi\b|bsnl|communications|\bmobile\b|cellular)/,"telecom"],
+ [/(steel|cement|infra|construction|engineering|l&t|larsen|jsw|tata steel|ultratech|ambuja|\bacc\b|industries|manufactur|industrial)/,"industrials"],
+ [/(realty|estate|housing|developers|properties|\bdlf\b|oberoi|prestige|brigade|lodha)/,"realestate"],
+ [/(logistic|supply chain|cargo|freight|courier|delhivery|blue dart|transport|shipping|express)/,"logistics"]
+];
+function detectSector(company){
+ const c=(company||"").toLowerCase();
+ for(const pair of SECTOR_MAP){ if(pair[0].test(c)) return pair[1]; }
+ return "default";
+}
+
+const SECTORS={
+ banking:{label:"Banking and financial services",
+  exec:"{C} operates in a sector where speed, trust and data depth decide who wins the customer. STAIR would help {C} turn its data and channels into an AI advantage, delivered under board-grade governance and full regulatory control.",
+  whyNow:"As digital-first lenders and fintechs reset customer expectations, the banks that embed AI now will own the cost and experience benchmark.",
+  focus:[
+   {title:"Conversational and advisory AI",detail:"Deploy assistants across {C}'s app, branch and call-centre journeys to resolve queries and surface the next best product."},
+   {title:"Straight-through processing",detail:"Automate onboarding, KYC, underwriting and servicing so {C} cuts turnaround time and manual cost."},
+   {title:"Energy-aware operations",detail:"Optimise data-centre and branch energy use across {C}'s footprint to lower cost and carbon."},
+   {title:"Risk and fraud foresight",detail:"Use predictive models to flag fraud, default and churn earlier across {C}'s portfolio."},
+   {title:"Governed automation",detail:"Automate reconciliation, compliance reporting and collections at {C} with auditable AI agents."}],
+  impact:["Lower cost-to-serve","Sharper risk decisions","A defensible data advantage"]},
+ insurance:{label:"Insurance",
+  exec:"{C} sits in a sector where underwriting precision, claims speed and customer trust drive growth. STAIR would help {C} turn its data into sharper pricing and faster service, under board-grade governance.",
+  whyNow:"As digital insurers and embedded cover reset expectations, the carriers that adopt AI now will set the price and service benchmark.",
+  focus:[
+   {title:"Conversational and advisory AI",detail:"Guide {C}'s customers through cover selection, renewals and claims with AI assistants across every channel."},
+   {title:"Straight-through claims",detail:"Automate {C}'s claims intake, triage and settlement to cut cycle time and leakage."},
+   {title:"Energy-aware operations",detail:"Optimise data-centre and office energy across {C} to lower cost and carbon."},
+   {title:"Risk and pricing foresight",detail:"Use predictive models to refine {C}'s underwriting, fraud detection and reserving."},
+   {title:"Governed automation",detail:"Automate policy servicing, compliance and reporting at {C} with auditable agents."}],
+  impact:["Lower claims leakage","Sharper underwriting","Faster customer service"]},
+ automotive:{label:"Automotive and mobility",
+  exec:"{C} operates where product, plant and customer experience all compound. STAIR would help {C} apply AI from the factory floor to the showroom, under board-grade governance.",
+  whyNow:"As EVs, connected vehicles and software-defined cars reshape the industry, the makers that embed AI now will lead on cost and experience.",
+  focus:[
+   {title:"Customer and dealer intelligence",detail:"Lift {C}'s conversion and aftersales with AI across enquiry, configuration and service journeys."},
+   {title:"Smart manufacturing",detail:"Use computer vision and process AI to raise quality and uptime across {C}'s plants."},
+   {title:"Energy and emissions optimisation",detail:"Forecast and optimise energy across {C}'s manufacturing and facilities to cut cost and carbon."},
+   {title:"Demand and supply foresight",detail:"Turn {C}'s data into sharper demand planning, inventory and supply-chain decisions."},
+   {title:"Governed automation",detail:"Automate procurement, warranty and reporting workflows at {C} with auditable agents."}],
+  impact:["Higher plant uptime","Lower quality cost","A sharper demand picture"]},
+ pharma:{label:"Pharmaceuticals and healthcare",
+  exec:"{C} works in a sector where research velocity, quality and compliance decide outcomes. STAIR would help {C} apply AI across discovery, manufacturing and commercial, under board-grade governance.",
+  whyNow:"As AI reshapes drug discovery and manufacturing, the firms that adopt it now will compress timelines competitors spend years on.",
+  focus:[
+   {title:"Research and document intelligence",detail:"Accelerate {C}'s literature review, trial documentation and regulatory submissions with AI."},
+   {title:"Quality and manufacturing intelligence",detail:"Use process AI and vision to raise yield and compliance across {C}'s plants."},
+   {title:"Energy-aware operations",detail:"Optimise energy across {C}'s manufacturing and labs to cut cost and carbon."},
+   {title:"Predictive supply and demand",detail:"Turn {C}'s data into sharper demand, inventory and cold-chain decisions."},
+   {title:"Governed automation",detail:"Automate pharmacovigilance, reporting and quality workflows at {C} with auditable agents."}],
+  impact:["Faster submissions","Higher manufacturing yield","Tighter compliance"]},
+ energy:{label:"Energy and utilities",
+  exec:"{C} sits at the centre of the energy transition, where efficiency and foresight compound at scale. STAIR would help {C} apply AI across assets, grid and customers, under board-grade governance.",
+  whyNow:"As the grid decarbonises and demand patterns shift, the operators that embed AI now will set the efficiency benchmark.",
+  focus:[
+   {title:"Customer and demand intelligence",detail:"Use AI to forecast demand and personalise {C}'s customer and B2B engagement."},
+   {title:"Asset and process intelligence",detail:"Apply predictive maintenance and process AI across {C}'s plants and infrastructure."},
+   {title:"Energy optimisation",detail:"Optimise generation, distribution and consumption across {C}'s network to cut cost and carbon."},
+   {title:"Predictive analytics",detail:"Turn {C}'s operational data into forward decisions on output, risk and pricing."},
+   {title:"Governed automation",detail:"Automate trading support, reporting and compliance at {C} with auditable agents."}],
+  impact:["Higher asset uptime","Lower energy cost","A cleaner footprint"]},
+ it_services:{label:"IT services and technology",
+  exec:"{C} sells expertise at scale, where delivery efficiency and differentiation decide margins. STAIR would help {C} embed AI in delivery and in client offerings, under board-grade governance.",
+  whyNow:"As AI resets software delivery economics, the firms that adopt it now will protect margin and win the AI mandate from clients.",
+  focus:[
+   {title:"AI-native client offerings",detail:"Help {C} package agentic and generative AI into new, higher-margin client services."},
+   {title:"Delivery intelligence",detail:"Use AI to lift {C}'s engineering productivity, code quality and project predictability."},
+   {title:"Energy-aware operations",detail:"Optimise data-centre and office energy across {C} to lower cost and carbon."},
+   {title:"Predictive delivery analytics",detail:"Turn {C}'s delivery data into forward decisions on risk, staffing and margin."},
+   {title:"Governed automation",detail:"Automate {C}'s internal operations, reporting and compliance with auditable agents."}],
+  impact:["Higher delivery margin","New AI revenue lines","Predictable delivery"]},
+ fmcg:{label:"Consumer goods",
+  exec:"{C} competes on brand, reach and cost in a fast-moving consumer market. STAIR would help {C} apply AI across demand, plant and customer, under board-grade governance.",
+  whyNow:"As commerce fragments across channels, the consumer firms that embed AI now will own the cost and shelf advantage.",
+  focus:[
+   {title:"Consumer and channel intelligence",detail:"Use AI to sharpen {C}'s marketing, assortment and trade spend across channels."},
+   {title:"Process and plant intelligence",detail:"Raise quality and throughput across {C}'s manufacturing with process AI and vision."},
+   {title:"Energy optimisation",detail:"Forecast and optimise energy across {C}'s plants and distribution to cut cost and carbon."},
+   {title:"Demand and supply foresight",detail:"Turn {C}'s data into sharper demand planning, inventory and distribution."},
+   {title:"Governed automation",detail:"Automate {C}'s finance, trade and reporting workflows with auditable agents."}],
+  impact:["Sharper trade spend","Lower supply cost","Stronger demand planning"]},
+ retail:{label:"Retail and e-commerce",
+  exec:"{C} wins on assortment, experience and supply-chain speed. STAIR would help {C} apply AI from demand to doorstep, under board-grade governance.",
+  whyNow:"As shoppers move fluidly across online and store, the retailers that embed AI now will set the experience and cost benchmark.",
+  focus:[
+   {title:"Customer and merchandising intelligence",detail:"Personalise {C}'s recommendations, pricing and assortment across channels."},
+   {title:"Operations intelligence",detail:"Use AI to streamline {C}'s store, warehouse and fulfilment operations."},
+   {title:"Energy optimisation",detail:"Optimise energy across {C}'s stores and warehouses to cut cost and carbon."},
+   {title:"Demand and inventory foresight",detail:"Turn {C}'s data into sharper demand, pricing and inventory decisions."},
+   {title:"Governed automation",detail:"Automate {C}'s back-office, returns and reporting workflows with auditable agents."}],
+  impact:["Higher conversion","Lower stockouts","Leaner operations"]},
+ telecom:{label:"Telecommunications",
+  exec:"{C} runs a vast network serving millions, where experience and efficiency decide share. STAIR would help {C} apply AI across network, customer and operations, under board-grade governance.",
+  whyNow:"As data demand and 5G economics intensify, the operators that embed AI now will lead on cost and experience.",
+  focus:[
+   {title:"Customer experience AI",detail:"Resolve {C}'s customer queries and reduce churn with assistants across every channel."},
+   {title:"Network intelligence",detail:"Use predictive AI to optimise {C}'s network performance, capacity and maintenance."},
+   {title:"Energy optimisation",detail:"Optimise energy across {C}'s towers and data centres to cut cost and carbon."},
+   {title:"Predictive analytics",detail:"Turn {C}'s network and usage data into forward decisions on demand, churn and risk."},
+   {title:"Governed automation",detail:"Automate {C}'s provisioning, billing and reporting workflows with auditable agents."}],
+  impact:["Lower churn","Higher network efficiency","Lower energy cost"]},
+ industrials:{label:"Industrials and engineering",
+  exec:"{C} builds and operates at scale, where uptime, quality and project control decide returns. STAIR would help {C} apply AI from plant to project, under board-grade governance.",
+  whyNow:"As industrial AI matures, the firms that adopt it now will set the cost, quality and delivery benchmark.",
+  focus:[
+   {title:"Project and bid intelligence",detail:"Use AI to sharpen {C}'s estimation, bidding and project controls."},
+   {title:"Plant and process intelligence",detail:"Apply vision and predictive maintenance to raise quality and uptime across {C}'s operations."},
+   {title:"Energy optimisation",detail:"Forecast and optimise energy across {C}'s plants and sites to cut cost and carbon."},
+   {title:"Predictive analytics",detail:"Turn {C}'s operational data into forward decisions on risk, schedule and cost."},
+   {title:"Governed automation",detail:"Automate {C}'s procurement, safety and reporting workflows with auditable agents."}],
+  impact:["Higher uptime","Tighter project control","Lower operating cost"]},
+ realestate:{label:"Real estate and development",
+  exec:"{C} creates and manages assets where capital efficiency and customer experience compound. STAIR would help {C} apply AI across sales, projects and operations, under board-grade governance.",
+  whyNow:"As buyers and tenants expect digital-first experiences, the developers that embed AI now will lead on velocity and margin.",
+  focus:[
+   {title:"Sales and customer intelligence",detail:"Use AI to qualify, nurture and convert {C}'s buyers across every channel."},
+   {title:"Project intelligence",detail:"Apply AI to {C}'s design, costing and construction controls to protect schedule and margin."},
+   {title:"Energy optimisation",detail:"Optimise energy across {C}'s projects and managed assets to cut cost and carbon."},
+   {title:"Predictive analytics",detail:"Turn {C}'s data into sharper decisions on demand, pricing and project risk."},
+   {title:"Governed automation",detail:"Automate {C}'s documentation, approvals and reporting with auditable agents."}],
+  impact:["Faster sales velocity","Tighter project margin","Lower operating cost"]},
+ logistics:{label:"Logistics and supply chain",
+  exec:"{C} moves goods at scale, where speed, cost and reliability decide loyalty. STAIR would help {C} apply AI across network, fleet and customer, under board-grade governance.",
+  whyNow:"As commerce demands faster, cheaper delivery, the operators that embed AI now will set the cost and service benchmark.",
+  focus:[
+   {title:"Customer and demand intelligence",detail:"Use AI to forecast volumes and personalise {C}'s customer and B2B engagement."},
+   {title:"Network and route intelligence",detail:"Optimise {C}'s routing, capacity and hub operations with predictive AI."},
+   {title:"Energy optimisation",detail:"Optimise fuel and facility energy across {C}'s fleet and network to cut cost and carbon."},
+   {title:"Predictive analytics",detail:"Turn {C}'s data into forward decisions on demand, delays and cost."},
+   {title:"Governed automation",detail:"Automate {C}'s documentation, tracking and reporting workflows with auditable agents."}],
+  impact:["Faster delivery","Lower cost per shipment","Higher reliability"]},
+ default:{label:"",
+  exec:"{C} sits at a moment where artificial intelligence can compound efficiency, insight and growth at once. STAIR would partner with {C}'s leadership to find the highest-return AI opportunities and deliver them under board-grade governance.",
   whyNow:"Across your industry, the firms that embed AI now will set the cost and experience benchmark that others spend years chasing.",
   focus:[
-   {theme:"AI opportunities",title:"Customer-facing intelligence",detail:"Bring AI assistants and recommendation engines into "+C+"'s customer journey to lift conversion and lifetime value."},
-   {theme:"Operational efficiency",title:"Process intelligence",detail:"Map "+C+"'s core workflows and remove manual handoffs with agentic automation, freeing teams for higher-value work."},
-   {theme:"Energy optimisation",title:"Smart consumption",detail:"Forecast and optimise energy use across "+C+"'s facilities and infrastructure to cut both cost and carbon."},
-   {theme:"Predictive analytics",title:"Demand and risk foresight",detail:"Turn "+C+"'s historical data into forward decisions on demand, churn and risk."},
-   {theme:"Automation",title:"Back-office automation",detail:"Automate repetitive finance, support and reporting tasks at "+C+" with governed AI agents."}
-  ],
+   {title:"Customer-facing intelligence",detail:"Bring AI assistants and recommendation engines into {C}'s customer journey to lift conversion and lifetime value."},
+   {title:"Process intelligence",detail:"Map {C}'s core workflows and remove manual handoffs with agentic automation, freeing teams for higher-value work."},
+   {title:"Smart consumption",detail:"Forecast and optimise energy use across {C}'s facilities and infrastructure to cut both cost and carbon."},
+   {title:"Demand and risk foresight",detail:"Turn {C}'s historical data into forward decisions on demand, churn and risk."},
+   {title:"Back-office automation",detail:"Automate repetitive finance, support and reporting tasks at {C} with governed AI agents."}],
+  impact:["Lower operating cost","Faster, sharper decisions","A defensible AI advantage"]}
+};
+
+const THEMES=["AI opportunities","Operational efficiency","Energy optimisation","Predictive analytics","Automation"];
+
+function demoProposal(company){
+ const C=company;
+ const S=SECTORS[detectSector(C)]||SECTORS.default;
+ const fill=s=>String(s).replace(/\{C\}/g,C);
+ const TITLES=["An AI-First Blueprint for "+C, C+": A Governance-Led AI Roadmap", "Putting AI to Work at "+C, "An AAAi Blueprint for "+C];
+ return {
+  company:C, domain:companyToDomain(C), sector:S.label||"", snapshot:"",
+  title:TITLES[hashStr(C)%TITLES.length],
+  exec:fill(S.exec),
+  whyNow:fill(S.whyNow),
+  focus:S.focus.map((f,i)=>({theme:THEMES[i], title:f.title, detail:fill(f.detail)})),
   approach:[
    {phase:"Diagnose",detail:"A focused audit of "+C+"'s data, processes and quick-win AI opportunities."},
    {phase:"Pilot",detail:"Build and prove one or two high-impact use cases with measurable outcomes."},
    {phase:"Scale",detail:"Industrialise what works across "+C+" with governance, training and an operating model."}
   ],
   governance:"Every model is deployed with transparency, human oversight and audit trails, so "+C+"'s board retains full confidence and control.",
-  impact:["Lower operating cost","Faster, sharper decisions","A defensible AI advantage"],
+  impact:S.impact,
   cta:"Let us map "+C+"'s AI roadmap together."
  };
 }
 
+function logoSources(domain){
+ const s=[];
+ if(BRANDFETCH_ID) s.push("https://cdn.brandfetch.io/"+domain+"/w/256/h/256?c="+BRANDFETCH_ID);
+ s.push("https://icons.duckduckgo.com/ip3/"+domain+".ico");
+ s.push("https://www.google.com/s2/favicons?domain="+domain+"&sz=128");
+ return s;
+}
 function logoEl(domain,name,size){
  const span=document.createElement("span");
  if(!domain){ return span; }
+ const srcs=logoSources(domain); let i=0;
  const img=document.createElement("img");
  img.className="clogo"; img.style.width=size+"px"; img.style.height=size+"px"; img.alt=name||"";
  img.style.display="none"; // stay hidden until a real logo loads
  img.onload=function(){ img.style.display="block"; };
- img.onerror=function(){ img.remove(); }; // logo not found: show nothing
- img.src="https://logo.clearbit.com/"+domain;
+ img.onerror=function(){ i++; if(i<srcs.length){ img.src=srcs[i]; } else { img.remove(); } }; // none found: show nothing
+ img.src=srcs[0];
  span.appendChild(img);
  return span;
 }
